@@ -1,71 +1,82 @@
-# Attention Notifier（注意力提醒）
+# Attention Notifier
 
-当 DeepSeek Harness 需要你操作、或任务已经结束时提醒你——尤其是窗口被最小化、你正在做别的事情的时候。
+[简体中文](README.zh-CN.md) | **English**
 
-## 提醒哪四个时刻
+Tells you when DeepSeek Harness needs you — or when a task has finished — especially
+while the window is minimised and you are doing something else.
 
-| 时刻 | 触发来源 | 默认策略 | 说明 |
+Built for the one problem that makes a long-running agent wasteful: you minimise DSH,
+the agent stops to ask for a permission decision, and nothing tells you. Minutes pass.
+The same happens when a task completes while you are away.
+
+## What it notifies on
+
+| Moment | Source | Default | Notes |
 |---|---|---|---|
-| **权限确认等待中** | `approval/request` 瀑布 | 始终提醒 | 工具请求越权执行，等待「允许一次 / 拒绝」。**阻塞型**：智能体在你回答前无法继续 |
-| **提问等待中** | `user-questions/request` 瀑布 | 始终提醒 | `ask_user_question`，含 plan-mode 的计划评审。同为阻塞型 |
-| **任务完成** | `session/event` 的 `turn/end`（`agent/status → idle` 是辅助信号） | 仅窗口不在前台 | 一轮任务跑完。受最短运行时长约束 |
-| **任务出错** | `agent/error` | 始终提醒 | 轮次以 error 结束。**用户主动停止不算**（中止走 `turn/end{aborted}`，与 error 互斥） |
+| **Waiting for permission** | `approval/request` waterfall | Always | A tool asks to run. **Blocking**: the agent cannot continue until you answer |
+| **Waiting for an answer** | `user-questions/request` waterfall | Always | `ask_user_question`, including plan-mode reviews. Also blocking |
+| **Task finished** | `session/event` `turn/end` (`agent/status → idle` is a secondary signal) | Only when unfocused | One turn completed. Subject to the minimum-duration threshold |
+| **Task failed** | `agent/error` | Always | The turn ended in error. **A manual stop does not count** — abort goes through `turn/end{aborted}` and is mutually exclusive with error |
 
-> **插件加载时若智能体已经在运行**，那一轮可能一次 `agent/status` 都收不到（该事件只在状态字符串
-> **变化**时派发）。所以完成提醒以 `turn/end` 为准 —— 它同时携带 `reason.kind`，能区分
-> `completed` / `aborted` / `interrupted`。
+> **If the plugin loads while an agent is already running**, that turn may deliver no
+> `agent/status` event at all — the event is only dispatched when the status *string*
+> changes. Completion therefore keys off `turn/end`, which also carries `reason.kind`
+> so `completed` / `aborted` / `interrupted` can be told apart.
 
-## 用哪些渠道提醒
+## Channels
 
-| 渠道 | 实现方式 | 能否在窗口最小化时生效 |
+| Channel | How | Reaches a minimised window? |
 |---|---|---|
-| **Windows 系统通知** | `powershell.exe` 5.1 → WinRT Toast，AppId `com.deepseek.dsh`；**带「打开 DSH」按钮** | 能，且点按钮可唤回窗口 |
-| **提示音** | 随 Toast 的 `<audio>` 标签播放（`ms-winsoundevent:Notification.Default`） | 能 |
-| **应用内提示条** | 客户端插件注册到 `shell.overlay`，右上角浮动卡片 | 需要窗口存在 |
+| **Windows notification** | `powershell.exe` 5.1 → WinRT toast, AppId `com.deepseek.dsh`, **with an "Open DSH" button** | Yes — and the button restores the window |
+| **Sound** | Carried by the toast's own `<audio>` element (`ms-winsoundevent:Notification.Default`) | Yes |
+| **In-app notice** | Client plugin registered into `shell.overlay`, a floating card in the top-right | Needs a visible window |
 
-> **「任务栏闪烁」渠道已被移除**，而不是修复。插件唯一够得着的做法是给网页标题加 `●` 前缀，
-> 但本应用窗口**没有可见标题栏**，这个标记不会被渲染到任何用户看得见的地方；Electron 真正的
-> `win.flashFrame` 需要窗口句柄，而 Host 半边拿不到。**一个做不到任何可见效果的开关，比没有这个开关更糟。**
+### Bringing the user back from a minimised window
 
-### 最小化时怎么把用户叫回来
+This is the design's central point: **while the window is minimised, nothing inside the
+application is visible.** So:
 
-这是设计上最关键的一点：**窗口最小化时，应用内的一切都看不见**。所以：
+1. **The system notification appears over whatever you are using** and plays a sound —
+   the only channel that works while minimised;
+2. **It carries an "Open DSH" button** that activates the `dsh://open` protocol. DSH's
+   `open-url` handler calls `focusPrimaryWindow()` (restore → show → focus), bringing the
+   window back. The protocol is registered by the installer, and both the button's XML
+   shape and the activation path were verified on a real machine.
 
-1. **系统通知弹在你当前使用的界面上**（覆盖任何应用），并播放提示音 —— 这是最小化时唯一有效的提醒；
-2. **通知上带一个「打开 DSH」按钮**，点击激活 `dsh://open` 协议；DSH 的 `open-url` 处理器调用
-   `focusPrimaryWindow()`（恢复 → 显示 → 聚焦），把窗口唤回前台。该协议由安装器注册，
-   按钮的 XML 形状与激活路径都已实测通过。
+**That is why the in-app notice has no "Open DSH" button** — it is only visible when the
+window is already in front, so that button would be a no-op. The notice's value is
+showing the pending content **in full** (system notifications get truncated).
 
-**因此应用内提示条里没有「打开 DSH」按钮** —— 它只在窗口已位于前台时可见，那个按钮等于空操作。
-提示条的价值是**完整显示待处理内容**（系统通知会被截断），而不是把窗口唤到前台。
+> Setting `restoreOnClick` to `false` removes the button, at the cost of the user having
+> to switch back to the window themselves.
 
-> 把 `restoreOnClick` 设为 `false` 可以让通知不带按钮，代价是用户只能手动切回窗口。
+> **No taskbar-flash channel.** The only mechanism a plugin can reach is prefixing the web
+> page's title, and this application's window has no visible title bar, so the marker is
+> never rendered where a user could see it. Electron's real `win.flashFrame` needs the
+> window handle, which the Host half cannot obtain. **A switch that cannot visibly do
+> anything is worse than no switch**, so the channel was removed rather than kept.
 
-> **不再占用侧栏徽标槽**：早先版本曾在折叠侧栏的展开按钮上放一个未读小圆点，但
-> `sidebar.toggle.badge` 是**单值插槽**，应用自身已经占用（报错文本为
-> `single slot "sidebar.toggle.badge" already has a registration at priority 0`）。
-> 该装饰已移除。
+Each moment takes its own policy: **off / only when unfocused / always**.
 
-每个时刻可独立选择策略：**关闭 / 仅窗口不在前台 / 始终**。
+### What each channel switch actually governs
 
-### 三个渠道开关各自管什么
-
-| 开关 | 作用位置 | 关掉之后 |
+| Switch | Where it acts | When off |
 |---|---|---|
-| `channels.toast` | **Host** 调 WinRT 弹通知 | 不再有系统通知（会退化为只响提示音） |
-| `channels.sound` | 作为 Toast 的 `<audio>` 一起发出 | 通知静音 |
-| `channels.inApp` | **Host** 的页面消息队列 | 队列不再入队、也不再下发给页面 → 提示条不出现 |
+| `channels.toast` | **Host** calls WinRT | No system notification (falls back to sound alone) |
+| `channels.sound` | Sent as the toast's `<audio>` | Silent notification |
+| `channels.inApp` | **Host**'s page message queue | Nothing is queued or sent to the page → no notice |
 
-> ⚠️ 这些开关都必须由 **Host 侧**真正消费。只在前端隐藏界面是不够的：
-> 早期版本里 `inApp` **只被解析、从未被使用**，于是把开关关掉后提示条照样出现。
-> 现在有回归测试锁定（`_cases.mjs` 的 "the inApp channel gates the page queue"）。
+> Every switch must be consumed **on the Host side**. Hiding UI in the front end is not
+> enough: in an early version `inApp` was *parsed but never read*, so turning it off left
+> the notice appearing anyway. A regression test now pins this.
 
-## 配置
+## Configuration
 
-设置页位置：**侧栏 → 插件（Plugins）→ 官方分组 → 注意力提醒**。
+Settings page: **sidebar → Plugins → dsh-attention-notifier**.
 
-运行时偏好写入 `$DSH_HOME/attention-notifier/settings.json`（原子写：临时文件 + rename）。
-行配置仍是默认值来源，位于 profile 的 `cordis.patch.yml`：
+Runtime preferences live in `$DSH_HOME/attention-notifier/settings.json` (atomic write:
+temp file + rename). The loader row remains the source of defaults, in the profile's
+`cordis.patch.yml`:
 
 ```yaml
 - insert:
@@ -81,332 +92,383 @@
         external: []
 ```
 
-| 字段 | 默认 | 说明 |
+| Field | Default | Meaning |
 |---|---|---|
-| `triggers.*` | 见上表 | 每个时刻的提醒策略：`off` / `unfocused` / `always` |
-| `minDurationMs` | `0` | 「任务完成」的最短运行时长。**选 `always` 时会绕过它**，否则两个设置会互相抵消 |
-| `channels.toast` | `true` | Windows 系统通知 |
-| `channels.sound` | `true` | 提示音（随 Toast 一起） |
-| `channels.inApp` | `true` | 应用内提示条 |
-| `restoreOnClick` | `true` | 点击「打开 DSH」时恢复并聚焦窗口 |
-| `rawFallback` | `false` | 改用 `scenario="reminder"` 的通知，会保留在操作中心 |
-| `windows.appId` | `com.deepseek.dsh` | Toast 的应用标识；由安装器的开始菜单快捷方式注册 |
-| `external` | `[]` | 预留位：手机推送渠道（见「已知限制」） |
+| `triggers.*` | see above | Per-moment policy: `off` / `unfocused` / `always` |
+| `minDurationMs` | `0` | Shortest run time worth a "finished" alert. **`always` bypasses it** — otherwise the two settings cancel each other out |
+| `channels.toast` | `true` | Windows notification |
+| `channels.sound` | `true` | Sound, carried by the toast |
+| `channels.inApp` | `true` | In-app notice |
+| `restoreOnClick` | `true` | Restore and focus the window when "Open DSH" is used |
+| `rawFallback` | `false` | Use `scenario="reminder"`, which persists in the Action Center |
+| `windows.appId` | `com.deepseek.dsh` | Toast application id; registered by the installer's Start Menu shortcut |
+| `external` | `[]` | Reserved slot for push channels (see Known limitations) |
 
-## 设置页里的自测
+### "Only when unfocused" needs a page to report focus
 
-设置页有 4 个测试按钮，分别验证一条链路，并显示内联的成功/失败文本：
+`unfocused` fires only when a page has reported the window as not in front. In a pure
+terminal / headless setup nothing can report that, so **`unfocused` never fires there**.
+If you use DSH from a terminal as well as the desktop window, choose `always`.
 
-- **测试系统通知** — 普通 Toast（带声音，带「打开 DSH」按钮）
-- **测试提醒通知** — `scenario="reminder"` 路径（可留在操作中心）
-- **测试提示音** — 单独播放 `C:\Windows\Media\notify.wav`
-- **测试恢复窗口** — 走 `dsh://` 单实例路径恢复窗口
+## Self-tests in the settings page
 
-**请务必至少点一次「测试系统通知」**：Windows 专注助手/勿扰会静默吞掉通知，而 API 不会返回错误，所以这是唯一能确认投递真的可用的方法。
+Four buttons, each exercising one link in the chain and reporting inline:
 
-## 界面何时出现
+- **Test notification** — a normal toast (sound + "Open DSH" button)
+- **Test reminder** — the `scenario="reminder"` path (stays in the Action Center)
+- **Test sound** — plays `C:\Windows\Media\notify.wav` on its own
+- **Test restore window** — drives the `dsh://` single-instance path
 
-插件是在运行中安装的，而页面的插件清单（boot payload）是**每次请求 index 时重新生成**的，所以：
+**Please press "Test notification" at least once.** Windows Focus Assist / Do Not Disturb
+swallows notifications silently and the API returns no error, so this is the only way to
+confirm delivery actually works.
 
-- **只需要刷新页面**（在 DSH 窗口里按 **F5** 或 **Ctrl+R**）就能看到设置卡片，不必重启 DSH。
+### Settings save themselves
 
-## 自动化测试
+There is no Save button. Every control writes as soon as it changes (debounced ~500 ms),
+and the status line reports *Saving… / Saved / Save failed* with a **Retry** when a write
+fails. Two details make this safe:
 
-两套可复跑的测试，共 137 条断言，都不需要真的弹通知：
+- only **user edits** trigger a write (`dirty` flag) — reacting to every draft change would
+  echo each poll straight back to the Host;
+- the 5-second poll **never overwrites an edit that has not been written yet**, which would
+  otherwise silently revert a control you just changed.
+
+## Installation
+
+### From npm
 
 ```powershell
-cd D:\dsh\AppData\default-workspace\attention-notifier
+cd $env:USERPROFILE\.dsh\profiles\desktop
+npm install dsh-attention-notifier
+```
 
-# Host 半边：四时刻判定逻辑、设置路由、注入行、观测计数、无配置行（80 条）
+Then enable it under **Plugins → dsh-attention-notifier**. If it is not listed, append to
+the profile's `cordis.patch.yml`:
+
+```yaml
+- insert:
+    - id: attention-notifier
+      name: 'dsh-attention-notifier'
+```
+
+### From source
+
+```powershell
+git clone https://github.com/RisingSun785/dsh-attention-notifier.git
+cd dsh-attention-notifier
+npm test          # 237 assertions, no DSH required
+```
+
+Then install it the same way, pointing at your clone (for example `plugin_manager`'s
+`install_bundle` with the directory's absolute path as `target`).
+
+### Requirements
+
+| | |
+|---|---|
+| OS | **Windows** (delivery goes through `powershell.exe` 5.1 + WinRT toast) |
+| DSH | Desktop build (`dsh-app://` window plus the `com.deepseek.dsh` toast AppId) |
+| Node | ≥ 20 |
+| Runtime dependencies | **None** — only `node:*` built-ins |
+
+> On non-Windows platforms the plugin loads but reports `delivery: false`, leaving the
+> in-app notice as the only channel. Cross-platform delivery (`osascript` /
+> `notify-send`) is not implemented.
+
+## Tests
+
+Two re-runnable suites, **237 assertions**, neither of which displays a notification:
+
+```powershell
+# Host half: the four-moment state machine, settings route, injection rows,
+#            observation counters, config-less rows (157 assertions)
 node ./_statemachine.mjs
 
-# 客户端半边：模块契约、插槽注册、瀑布委托、生命周期（57 条）
+# Client half: module contract, slot registrations, waterfall delegation,
+#              page lifecycle, autosave (80 assertions)
 node ./_client_cases.mjs
 ```
 
-`npm test` 会依次跑两套；如果 PowerShell 的执行策略禁止 `npm.ps1`，用 `npm.cmd test`。
+`npm test` runs both in order. If PowerShell's execution policy blocks `npm.ps1`, use
+`npm.cmd test`.
 
-**Host 半边**用 loader hook（`_loader.mjs`）把 Windows 投递层换成记录器（`_delivery_stub.mjs`），再用假的 Cordis context 驱动**真实的插件代码**，所以断言的是真实决策而不是复刻逻辑。每次安装都会拿到一个全新的 Harness home 与空的设置文档，因此设置类的用例不会泄漏到后面的用例。
+The **Host half** installs a loader hook (`_loader.mjs`) that swaps the Windows delivery
+layer for a recorder (`_delivery_stub.mjs`), then drives **the real plugin code** through a
+fake Cordis context — so the assertions cover real decisions, not a re-implementation.
+Each install gets a fresh Harness home and an empty settings document, so settings cases
+cannot leak into later ones.
 
-覆盖：四个时刻各自的触发与文案、按 `callId` 去重、`off`/`unfocused`/`always` 三种策略、最短时长阈值、排队消息/子 agent/被委派子会话的抑制、用户中断与 `interrupted` 轮次的抑制、等待审批期间不误报完成、投递渠道的组合回退、设置路由的读写/校验/404/405 与恶意输入归一化、注入行的结构（脚本本身还要过 `new Function` 语法检查），以及观测计数器的增量。
+Coverage includes: each moment's trigger and copy, permission de-duplication by `callId`,
+plan-review `detail` selection, the three policies, the duration threshold, suppression for
+queued messages / subagents / delegated subsessions, suppression for user aborts and
+`interrupted` turns, no false "finished" while an approval is pending, channel fallback,
+**delivery consistency across all four moments** (each driven with a real payload, asserting
+toast + sound + button), the settings route's read/write/validation/404/405 and hostile-input
+normalisation, **the live Plugins-page switch gate** (off silences immediately, on resumes
+immediately, unreadable fails open), injection-row structure (the script must also pass a
+`new Function` syntax check), and the observation counters.
 
-**客户端半边**在 Node 里执行 `client.js`（它是普通 JS，只是需要 `window.__ModuleLoader__`、`document`、`fetch` 等桩），验证：注册 id 等于**包名**、工厂返回合法的插件对象、三个插槽注册、两个 Remote Event 订阅、**两个瀑布监听器都调用 `next()`**、异常请求不破坏流程、页面生命周期监听的挂载与卸载、以及设置卡片能渲染且会去读插件路由。
+The **client half** runs `client.js` under Node (plain JS needing only
+`window.__ModuleLoader__`, `document`, `fetch` stubs) to verify the registration id equals
+the **package name**, the factory returns a valid plugin object, the three slot
+registrations, the two Remote Event subscriptions, that **both waterfall listeners call
+`next()`**, that a throwing request does not break the flow, page-lifecycle mount/dispose,
+and that the settings card renders and reads the plugin's route.
 
-React 走桩（页面的 React 来自 shell 自带 bundle，Node 里取不到），所以**不断言真实渲染结果**；卡片文案改为断言 bundle 里确实包含这些字符串。
+React is stubbed (the page's React comes from the shell's own bundle and is unreachable from
+Node), so **rendered output is not asserted**; copy is asserted against the bundle instead.
 
-## 可观测性：确认插件真的在工作
+### What the tests caught
 
-插件把「页面接触情况」写到 `$DSH_HOME/attention-notifier/status.json`，**每次页面联系插件时以及每 60 秒**刷新一次。
-页面本身在 Host 侧是不可见的，所以这个文件是唯一能自己确认「浏览器半边到底有没有加载」的凭据 —— 不必去读页面控制台。
+Four real defects, plus three cases where the *test* was wrong rather than the code:
 
-```powershell
-Get-Content "$env:DSH_HOME\attention-notifier\status.json" -Raw
-```
+1. **The plugin would fail to load after a restart.** `apply` read `rawConfig ?? Config({})`,
+   but `Config` is an **object, not a function** — calling it throws
+   `TypeError: Config is not a function`. That branch is exactly the path a restart takes:
+   an id-targeted override later in the same patch file replaces the row's whole `config`,
+   so the row arrives as `undefined`. The plugin worked all session and then **failed to load
+   entirely on the next restart**.
+2. **A transient `idle → running` reported a false "finished".** The debounce was a `queued`
+   boolean, but "a message wakes the agent immediately after a cancellation" emits `idle`
+   then `running` **within one synchronous step**, and the `running` branch cleared the flag
+   before the microtask guard ran. Fixed with a per-status-change generation counter plus a
+   live status check.
+3. **Route 404/405 semantics.** Checking the method before the path made *any* unknown path
+   answer 405. Correct order: is the action known (else 404), then is the method allowed
+   (else 405).
+4. **The "restore window" executable path never resolved.** `reg.exe` output looks like
+   `    (Default)    REG_SZ    "C:\…\DeepSeek Harness.exe" "%1"`. The first pattern
+   deliberately excluded quotes (to avoid matching `"%1"`), but then the drive letter is
+   neither at line start nor after whitespace, so it **never matched** — and this
+   installation's path contains a space. Matching the **quoted** form fixed it. This is
+   exactly why capability probing (`probe()` reporting `appExe`) earns its place: the
+   failure was otherwise silent.
+5. **"Waiting for an answer" was silently dead while 234 assertions passed.** The handler
+   required `request.wait.callId`, a field that **does not exist** — `dsh-user-questions`
+   dispatches only `{ questions, agent, signal }`, and `callId` is assigned internally. The
+   test fixtures had invented that field *by reading the implementation*, so they validated
+   an input shape that never occurs. Fixtures now copy the real payload from the dispatch
+   site, and an assertion pins that no live code reads the invented field.
 
-| 字段 | 含义 |
+> **The lesson worth keeping**: write event fixtures from the **dispatch site**, never from
+> your own understanding of the code. A fixture derived from the implementation agrees with
+> the implementation's mistakes.
+
+### Diagnostics
+
+The plugin writes page-contact state to `$DSH_HOME/attention-notifier/status.json`, refreshed
+**on every page contact and every 60 seconds**. The page is invisible from the Host, so this
+file is the only self-service proof that the browser half loaded.
+
+| Field | Meaning |
 |---|---|
-| `client.seen` | **页面联系插件的次数。大于 0 就证明客户端半边确实加载并运行了** |
-| `clientProbe` | 页面自己访问 `/api/attention-notifier/state` 的结果（url / ok / status / error / body）。用来判断 `dsh-app://` 下 `fetch` 是否可用 |
-| `observed` | 观测计数（见下表） |
-| `stats` | 投递结果计数（toast ok/fail、sound ok/fail、最近一次错误） |
-| `delivery` | 本机是否具备系统通知能力 |
+| `client.seen` | **Page contacts. Non-zero proves the client half loaded and ran** |
+| `clientProbe` | The page's own request to `/api/attention-notifier/state` (url / ok / status / error / body) |
+| `observed` | Observation counters (below) |
+| `stats` | Delivery results, including `byKind` per moment |
+| `effective` | The resolved settings, so a stale in-memory override is distinguishable from a fresh one |
+| `switch` | Whether the Plugins-page switch currently allows alerts, and which profile it read that from |
+| `lastToastXml` | The exact toast document last handed to the shell |
+| `eventTypes` | Every `session/event` type seen, so "never arrived" is distinguishable from "arrived with an unexpected shape" |
 
-设置页的「状态」区显示同样的数据。「已观测」计数器：
+`stats.byKind` counts `attempted` / `toastOk` / `toastFail` **per moment**. With only a
+total, "the question alert never fired" and "the completion alert fired twice" look
+identical; with per-moment counts, `observed.question = 1` alongside `byKind = {}` localises
+the fault to a trigger's own guard rather than the delivery layer.
 
-```
-已观测（状态变化 / 权限 / 提问 / 轮次结束 / 已提醒 / 已抑制）: 12 / 1 / 0 / 6 / 3 / 4
-```
+Observation counters, also shown in the settings page:
 
-| 计数 | 含义 |
+| Counter | Meaning |
 |---|---|
-| 状态变化 | 收到的 `agent/status` 事件数。**只要它不为 0，就证明插件确实接上了 agent 状态机** |
-| 权限 / 提问 | 收到的两个瀑布请求数 |
-| 轮次结束 | 收到的 `turn/end` 事件数 |
-| 已提醒 | 实际发出的提醒数 |
-| 已抑制 | 结算为 idle 但被有意压掉的次数（排队消息、子 agent、时长不足、策略为 off、用户中断等） |
+| status changes | `agent/status` events received. **Non-zero proves the plugin attached to the agent state machine** |
+| permission / question | The two waterfall requests received |
+| turn ends | `turn/end` events received |
+| delivered | Alerts actually sent |
+| suppressed | Idle settlements deliberately dropped (queued messages, subagents, too short, policy `off`, user abort, …) |
 
-### 验证状态（诚实记录）
+### Independently verifying that a toast really reached Windows
 
-**已实测确认：**
-
-| 项 | 证据 |
-|---|---|
-| **真实通知已发出并投递** | 实时 `status.json`：`delivered: 6`、`toastOk: 6`、`toastFail: 0`、`suppressed: 0` |
-| 四个时刻的事件观测 | 同一份数据：`status: 12`、`turnEnd: 6`、`question: 1` |
-| 通知上的「打开 DSH」按钮会渲染 | 实测弹出两条对比通知，确认 `<actions>` 写法有效 |
-| 按钮的激活路径 | `dsh://open` 已注册；`main.js` 的 `open-url` 处理器调用 `focusPrimaryWindow()`（恢复→显示→聚焦）；实测启动成功 |
-| 插件被 Loader 加载并执行完 `apply` | `loaded.json` 记录了真实 `pid` 与 `hasConfig` |
-| 客户端半边运行 | 页面轮询持续，`client.seen` 稳步增长 |
-| 页面 ↔ Host 通信 | 页面自测探针返回 **HTTP 200 + 完整 JSON** —— 证明 `dsh-app://` 下相对 `fetch` 可用 |
-| 焦点检测与即时上报 | `focusReports` 持续增长，`signals` 形如 `hidden/unfocused/away` |
-| 有效配置可核对 | `effective` 字段随诊断一同发布 |
-| 提示音 / 提醒类通知 / 恢复窗口 | 逐条实跑，均返回 `ok`；exe 路径已能正确解析 |
-| 启动不再崩溃 | `settings/describe` 的遍历已用真实逻辑验证不再抛错 |
-
-**唯一仍需人工确认的一项**：点「打开 DSH」按钮后窗口是否被唤回。
-按钮渲染与协议注册都已验证，但「点击 → 窗口恢复」这一跳只能靠人眼确认
-（`focusPrimaryWindow` 是恢复+显示+聚焦三步，无法从进程列表可靠观测）。
-
-### 这套测试抓到的四个真实缺陷
-
-**1. 重启后插件会加载失败（最严重）。**
-`apply` 里写的是 `rawConfig ?? Config({})`，但 `Config` 是**对象而不是函数**，调用它就抛 `TypeError: Config is not a function`。而这个分支恰好是**重启后必然走到的那条路**：同一份 patch 文件里后面的 id 定向覆盖（`- id: attention-notifier / disabled: false`）会把 `insert` 里的整份 `config` **整体替换掉**，于是行到达时为 `undefined`。也就是说，插件在当前会话里一切正常，但**下次重启 DSH 就会整个加载失败**。改成 `defaultConfig()`（`config.js` 导出的一个真函数）后修复，并补了「无配置行」整段测试。
-
-**2. 瞬时 `idle → running` 会误报「任务完成」。**
-最初用 `queued` 布尔量做去抖，但「轮次被取消后有排队消息立刻唤醒」这条路径会先发 `idle`、再在**同一同步步内**发 `running`，而 `running` 分支会把 `queued` 清掉，于是微任务里的守卫失效。改成**每次状态变化都递增的 generation 计数**后才正确（两条护栏：generation 未变 + 实时状态是 idle）。这个靠读源码发现不了。
-
-**3. 路由的 404/405 语义。**
-把方法检查放在路径校验之前，会让**任何未知路径**都返回 405。正确顺序：先判断 action 是否属于已知集合（否则 404），再判断方法（否则 405）。
-
-**4.「恢复窗口」的 exe 路径永远解析不出来。**
-从注册表读 `dsh://` 协议命令时，`reg.exe` 的输出形如
-`    (默认)    REG_SZ    "C:\…\DeepSeek Harness.exe" "%1"`。
-最初用 `/(?:^|\s)([A-Za-z]:\\[^"]+?\.exe)/` 匹配 —— 因为刻意排除了引号（怕误匹配 `"%1"`），
-盘符前既不是行首也不是空白，于是**永远匹配不上**；而本机路径含空格
-（`D:\dsh\AppData\DeepSeek Harness\DeepSeek Harness.exe`），这个 bug 一直静默存在。
-改成优先匹配**被引号包裹**的路径 `/"([A-Za-z]:\\[^"]+?\.exe)"/` 后修复
-（引号同时也让 `"%1"` 不可能被误匹配）。
-这类「静默降级」正是能力探测（`probe()` 报告 `appExe`）值得存在的原因。
-
-测试本身也修过两处「测试写错而非代码错」的问题，值得记下来：用例之间共享设置文档会让前一个用例的写入泄漏到后一个（现在每次安装都拿全新的 Harness home）；以及 `unfocused` 策略在页面从未上报可见性时会**刻意保持沉默**（这是无人值守时的保守取向），所以相关用例必须先上报可见性。
-
-## 独立验证投递是否真的到达 Windows
-
-不依赖插件，直接查注册表即可确认 Toast 是否被系统接收：
+No plugin involvement needed — the registry records every toast the shell accepted:
 
 ```powershell
 Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\com.deepseek.dsh' |
   Select-Object LastNotificationAddedTime, PeriodicNotificationCount
 ```
 
-`PeriodicNotificationCount` 与 `LastNotificationAddedTime` 会随每次成功投递增长。本插件开发时用这个方法确认过两次测试通知真的到达了系统。
+Both values grow with each successful delivery.
 
-## 已知限制
+> **Caveat**: `CreateToastNotifier(...).Show(...)` returns success even for an **unregistered
+> AppId**, so "no error" does not mean "displayed". The registry count is the real evidence.
 
-1. **专注助手/勿扰会静默吞掉系统通知**，插件无法探测（Windows 没有给普通桌面应用这种 API）。缓解手段：`rawFallback` + 提示音 + 应用内提示条并行，并提供自测按钮。手机推送渠道是本问题的根本解法，但 v1 未实现（见第 4 条）。
-2. **审批提醒只在策略为 `ask` 的会话里出现**。`approval/request` 瀑布在 `never` 策略下根本不会派发——服务在派发前就直接返回 `rejected`。所以 `never` 会话不会产生权限确认提醒，这是设计使然。
-3. **提示条只在窗口存在时可见**（浏览器模式或桌面窗口）。纯终端/headless 组合下只剩系统通知与声音。
-4. **`external`（微信/QQ/手机推送）只有配置位，没有实现**。调研结论：个人微信与 QQ 没有官方推送接口，现实做法是用中转推送服务（Server酱³ / PushPlus / 企业微信机器人 / ntfy / Bark），需要你自行注册并持有 token；而 Wechaty/PadLocal/hook 这类非官方个人号桥接违反微信用户规范、有封号风险，因此明确不做。要加的话，渠道接口已经留在 `external`。
-5. **不做远程审批**：通知渠道是单向出站的，绝不能当成审批路径。审批仍在应用内完成。
-6. **没有「任务栏闪烁」渠道**。插件唯一够得着的做法是改网页标题，而本窗口没有可见标题栏；
-   Electron 的 `win.flashFrame` 需要窗口句柄，Host 半边拿不到。该渠道因此被**移除**而非保留。
-7. **恢复窗口走单实例路径**（重新启动应用 → `second-instance` → `restore/show/focus`）。如果 DSH 已经退出，这会冷启动它。
-8. **应用内提示条的错误/完成消息来自轮询**（2 秒一次），因此最多有约 2 秒延迟；审批与提问是事件驱动，无延迟。
+## Known limitations
 
-## 实现要点（为什么这么做）
+1. **Focus Assist / Do Not Disturb swallows system notifications silently** and the plugin
+   cannot detect it (Windows offers no API for ordinary desktop apps). Mitigations:
+   `rawFallback`, sound, the in-app notice in parallel, and the self-test buttons. A phone
+   push channel is the real fix, but v1 does not implement one (see 4).
+2. **Permission alerts only occur in sessions whose policy is `ask`.** The
+   `approval/request` waterfall is never dispatched under `never` — the service returns
+   `rejected` before dispatch. So a `never` session produces no permission alert by design.
+3. **The in-app notice needs a window** (browser or desktop). In a pure terminal / headless
+   setup only the system notification and sound remain.
+4. **`external` (WeChat / QQ / phone push) is a config slot with no implementation.**
+   Neither WeChat nor QQ offers an official personal push API; the realistic route is a
+   relay service (Server酱³ / PushPlus / WeCom bot / ntfy / Bark) requiring your own token.
+   Unofficial personal-account bridges (Wechaty, PadLocal, hooks) violate WeChat's terms and
+   risk account bans, so they are deliberately not built. The channel interface is left in
+   `external`.
+5. **No remote approval.** Notification channels are outbound-only and must never be used as
+   an approval path. Approvals stay in the application.
+6. **No taskbar-flash channel** (see above).
+7. **Restore goes through the single-instance path** (relaunch → `second-instance` →
+   `restore/show/focus`). If DSH has exited, this cold-starts it.
+8. **In-app notice messages for completion/failure come from polling** (every 2 seconds), so
+   they can lag by up to ~2 seconds. Permission and question alerts are event-driven.
 
-三层分工，每一层都受 DSH 的实际约束决定：
+## Implementation notes
 
-- **Host 半边**（`index.js`）负责事件检测与状态机、系统级投递、运行时设置持久化，并拥有一个 `/api/attention-notifier` 路由。
-- **客户端半边**（`client.js`）负责应用内提示条、设置页，以及「用户是否在看窗口」的判断——只有页面知道这件事。
-- **注入脚本**（由 `webserver/index-inject` 下发）只剩一个**可选的诊断条**（`?attention-probe=1`），
-  用来单独验证页面能否访问插件路由；正常使用时它什么都不做。
+Three layers, each shaped by a real DSH constraint:
 
-几条硬性约束（都来自对 DSH 源码的核对）：
+- **Host half** (`index.js`) — event detection and the state machine, system-level delivery,
+  runtime settings persistence, and one `/api/attention-notifier` route.
+- **Client half** (`client.js`) — the in-app notice, the settings page, and the
+  "is the user actually looking" judgement, which only the page can make.
+- **Injected script** (via `webserver/index-inject`) — now only an **opt-in diagnostic strip**
+  (`?attention-probe=1`) proving the page can reach the plugin's route; inert in normal use.
 
-- **不能向 Electron 主进程发自定义 IPC 消息**：未知消息类型会直接终止整个 Host 进程（`main.js` 对 Host 发来的消息做严格白名单校验）。所以系统通知用 `powershell.exe` 5.1 的 WinRT 投影实现，零依赖。
-- **两台瀑布监听器必须 `return next()`**：`approval/request` 的默认 `next` 解析为 `unavailable`（等于拒绝工具），`user-questions/request` 的默认 `next` 抛 `NO_PROVIDER`。任何不调用 `next()` 的返回值都会抢占请求、顶掉真正的 UI 应答者。两个监听器都用 `{ prepend: true }` 注册，以保证「先提醒、再交回 UI」的顺序确定。
-- **`agent/status` 只在状态字符串真正变化时发出**，且 `running` 覆盖整个轮次（含等待审批与等待回答）。但当中止后立刻有新消息唤醒时，`idle` 会紧跟 `running` 在同一同步步内连续发出。完成判定因此在微任务里用**generation 计数**（每次状态变化递增）加实时 `agent.status` 双重护栏，避免把这次续跑误报成「任务完成」。详见「自动化测试」一节。
-- **投递永不阻塞智能体**：所有子进程调用都带超时、`windowsHide`、`detached` + `unref`，并发上限 8；任何失败只记日志、绝不上抛到 agent 路径。
-- **文案通过环境变量传递给 PowerShell，不拼接进命令行**；Toast 的标题与正文用 `CreateTextNode` 作为文本节点附加，XML 只用常量生成。会话标题与审批理由可以包含任意字符（包括引号与换行），注入路径因此被彻底切断。
-- **路由复用连接服务的准入检查**（Host/Origin 围栏 + 浏览器会话 cookie），因为 webserver 自身不提供任何认证。未通过时返回 401/403，已实测。
+Hard constraints, each verified against DSH's source:
 
-## 文件
+- **No custom IPC to the Electron main process.** An unknown message type **terminates the
+  Host process** (main.js strictly whitelists what the Host may send). System notifications
+  therefore go through `powershell.exe` 5.1's WinRT projection, with zero dependencies.
+- **Both waterfall listeners must `return next()`.** The default `next` resolves to
+  `unavailable` for `approval/request` (which *denies the tool*) and rejects with
+  `NO_PROVIDER` for `user-questions/request`. Anything that fails to delegate hijacks the
+  request and displaces the real UI answerer. Both register with `{ prepend: true }` so
+  "notify, then hand back to the UI" is deterministic.
+- **`agent/status` is emitted only when the status string changes**, and `running` spans the
+  whole turn including permission and question waits. Completion therefore uses a generation
+  counter plus a live status check.
+- **Delivery never blocks the agent.** Every subprocess call has a timeout, `windowsHide`,
+  `detached` + `unref`, and a concurrency cap of 8. Failures are logged, never thrown onto
+  the agent's path.
+- **Text reaches PowerShell through environment variables, never the command line**, and the
+  toast's title and body are attached with `CreateTextNode`; the XML itself is built from
+  constants only. Session titles and approval reasons can contain arbitrary characters
+  (quotes, newlines), so the injection path is closed.
+- **The route reuses the connection service's admission check** (Host/Origin fence plus the
+  browser session cookie), because the webserver provides no authentication of its own.
+  Verified: 401/403 otherwise.
 
-| 文件 | 角色 |
+## Files
+
+| File | Role |
 |---|---|
-| `index.js` | Host 半边：事件监听、完成状态机、投递调度、设置持久化、HTTP 路由、注入 |
-| `config.js` | 自带的 Standard Schema 配置校验器（不依赖 `@deepseek-ai/schemastery`，链接安装的插件无法解析该包） |
-| `win32.js` | Windows 投递层：Toast、提醒类通知、提示音、恢复窗口、能力探测 |
-| `client.js` | 客户端半边：提示条、设置页、两个 Remote Event 监听器、页面自测探针 |
-| `cordis.patch.yml` | 行配置（同时作为 bundle 层与 profile 补丁层被组合，因此用 id 定向覆盖而非 insert） |
-| `locale/{zh,en}.json` | 插件卡片标题与描述 |
-| `_statemachine.mjs` / `_cases.mjs` / `_loader.mjs` / `_delivery_stub.mjs` | Host 半边的测试 |
-| `_client_cases.mjs` | 客户端半边的测试 |
-| `references/` | 开发期调研记录（见下） |
+| `index.js` | Host half: event listeners, completion state machine, delivery scheduling, settings persistence, HTTP route, injections |
+| `config.js` | Self-contained Standard Schema validator (no `@deepseek-ai/schemastery`, which a linked plugin cannot resolve) — and the Schemastery node shape `dsh-settings` walks |
+| `win32.js` | Windows delivery: toast, reminder-class toast, sound, window restore, capability probing |
+| `client.js` | Client half: notice, settings page, two Remote Event listeners, page self-test probe |
+| `cordis.patch.yml` | Row config, composed as both a bundle layer and a profile patch layer |
+| `locale/{zh,en}.json` | Plugin card title and description |
+| `_statemachine.mjs` / `_cases.mjs` / `_loader.mjs` / `_delivery_stub.mjs` | Host-half tests |
+| `_client_cases.mjs` | Client-half tests |
+| `references/` | Development-time investigation notes (below) |
 
-## 调研记录
+## Investigation notes
 
-`references/` 里是三份开发期写下的技术记录，对后续做 DSH 插件同样有用：
+`references/` holds three technical records written during development. They are equally
+useful for building other DSH plugins:
 
-| 文件 | 内容 |
+| File | Contents |
 |---|---|
-| `dsh-plugin-findings.md` | **最值得先读**。实测确认的硬约束汇总：Electron IPC 白名单（乱发消息会杀掉 Host 进程）、WinRT Toast 正确配方与「未注册 AppId 也返回成功」这个陷阱、页面权限自动授予、插件包约定（bundle id 必须等于包名、`Config` 只需标准 schema、schemastery 不可被链接插件导入）、四时刻事件契约、以及两个只有实测才能发现的缺陷 |
-| `dsh-notification-investigation.md` | Windows 通知投递的完整调研：主进程源码分析、IPC 通道枚举、AUMID 注册验证、Toast/声音/恢复窗口的具体命令与实测结果 |
-| `dsh-plugin-authoring-contract.md` | 插件包结构、patch 方言、安装机制、兼容性门槛、HMR 语义的逐条取证 |
+| `dsh-plugin-findings.md` | **Read this first.** Hard constraints confirmed by experiment: the Electron IPC whitelist (an unlisted message kills the Host process), the correct WinRT toast recipe and the "unregistered AppId still returns success" trap, automatic page-permission grants, plugin package conventions (the bundle id must equal the package name, `Config` only needs a standard schema, schemastery is unimportable from a linked plugin), the four-moment event contract, and the defects only real-machine testing surfaced |
+| `dsh-notification-investigation.md` | The full Windows delivery investigation: main-process source analysis, IPC channel enumeration, AUMID registration checks, and the exact commands and results for toast / sound / window restore |
+| `dsh-plugin-authoring-contract.md` | Point-by-point evidence for plugin package structure, the patch dialect, the install mechanism, compatibility gates, and HMR semantics |
 
-## 安装
-
-### 从 npm 安装（推荐）
+## Development
 
 ```powershell
-# 在你的 DSH profile 目录里执行
-cd $env:USERPROFILE\.dsh\profiles\desktop
-npm install dsh-attention-notifier
+# Install through the plugin manager (the recommended path for local development)
+# plugin_manager: install_bundle, target = <absolute path to this directory>
 ```
 
-然后在页面 **插件 → dsh-attention-notifier** 把它打开。若列表里没有，在 profile 的
-`cordis.patch.yml` 末尾加上：
+### ⚠️ Host-half changes require a DSH restart
 
-```yaml
-- insert:
-    - id: attention-notifier
-      name: 'dsh-attention-notifier'
-```
+**The longest-running trap in this project.** `plugin_manager`'s `set_plugin` (disable →
+enable) rewrites the loader row's enabled state and recomposes the profile patch, but it does
+**not** re-import an already-cached ES module:
 
-### 从源码安装
-
-```powershell
-git clone https://github.com/RisingSun785/dsh-attention-notifier.git
-cd dsh-attention-notifier
-npm test          # 237 条断言，无需 DSH 在运行
-```
-
-再按上面同样方式安装（把 `dsh-attention-notifier` 指向你 clone 下来的目录即可，
-例如 `plugin_manager` 的 `install_bundle`，`target` 填该目录的绝对路径）。
-
-### 运行要求
-
-| 项 | 要求 |
+| What you changed | How it takes effect |
 |---|---|
-| 操作系统 | **Windows**（投递层走 `powershell.exe` 5.1 + WinRT Toast） |
-| DSH | 桌面版（`dsh-app://` 窗口 + `com.deepseek.dsh` 的 Toast AppId） |
-| Node | ≥ 20 |
-| 运行时依赖 | **零** —— 只用 `node:*` 内置模块 |
+| `client.js` (browser half) | **No restart** — `dsh-client-hmr` polls the file's bytes every 500 ms and tells the page to re-run the factory over SSE. Refresh the page |
+| `index.js` / `config.js` / `win32.js` (Host half) | **Restart DSH** — the module is in the ESM registry and `set_plugin` will not re-import it |
+| The profile's `cordis.patch.yml` | **No restart** — HMR watches the file and reconciles loader entries |
 
-> 在非 Windows 平台上插件会加载但 `delivery: false`，此时只剩应用内提示条这一个渠道。
-> 跨平台投递（`osascript` / `notify-send`）尚未实现。
+Useful when debugging: `apply()`'s first action writes
+`$DSH_HOME/attention-notifier/loaded.json` (timestamp + pid). **If that file is not updated,
+the Loader never reached the module** — the problem is module re-import, not anything inside
+`apply`. And `status.json` is rewritten by a 60-second heartbeat, so **a stale timestamp means
+the plugin is not running**, not "nothing happened".
 
-## 开发与重载
+### ⚠️ Renaming the package requires `pnpm install`
 
-```powershell
-# 插件管理器安装（本地开发时的推荐路径）
-# plugin_manager: install_bundle, target = <插件目录的绝对路径>
-```
-
-### ⚠️ Host 半边的代码改动必须重启 DSH 才生效
-
-**这是本项目踩得最久的一个坑。** `plugin_manager` 的 `set_plugin`（disable → enable）只会重写
-loader 行的启用状态并重组 profile 补丁，**不会重新导入已缓存的 ES 模块**。也就是说：
-
-| 你改了什么 | 怎么生效 |
-|---|---|
-| `client.js`（浏览器半边） | **无需重启** —— `dsh-client-hmr` 以 500 ms 轮询文件字节，变化后经 SSE 让页面重新执行工厂。刷新页面即可 |
-| `index.js` / `config.js` / `win32.js`（Host 半边） | **必须重启 DSH** —— 模块已在 ESM 注册表里，`set_plugin` 不会重新导入 |
-| profile 的 `cordis.patch.yml` | **无需重启** —— HMR 监视该文件并协调 Loader 条目 |
-
-排查时用得上：`apply()` 的第一行会写
-`$DSH_HOME/attention-notifier/loaded.json`（含时间戳与 pid）。**这个文件没更新，就说明 Loader
-根本没调用到这个模块** —— 问题在「模块有没有重新导入」，而不在 `apply` 内部。
-另外 `$DSH_HOME/attention-notifier/status.json` 每 60 秒被心跳重写一次，所以
-**文件时间戳陈旧 = 插件没在运行**，而不是「什么都没发生」。
-
-### ⚠️ 改了包名必须跑 `pnpm install`
-
-`package.json` 的 `name`、profile 的 `dependencies`、`bundles` 列表、`cordis.patch.yml`
-的 `name`，以及 **`node_modules` 里的符号链接** 是五处。前四处是文本，第五处只有包管理器能重建：
+The name lives in five places: `package.json`'s `name`, the profile's `dependencies`, the
+`bundles` list, `cordis.patch.yml`'s `name` — and the **symlink under `node_modules`**, which
+only the package manager can rebuild:
 
 ```powershell
 cd $env:USERPROFILE\.dsh\profiles\desktop
 pnpm install
 ```
 
-漏掉这一步的症状是 `cannot resolve profile bundle "<包名>"`（插件页显示「异常」），
-而且**整个 Host 上下文建立不起来 → 连对话都会失败**，报一个看不出原因的
-`REQUEST_EXTENSION`。名字只改了文档或补丁而没重装，就会撞上这个。
+Skipping it produces `cannot resolve profile bundle "<name>"` (the Plugins page shows
+"anomaly"), and because the whole Host context fails to build, **even conversations fail**
+with an unhelpful `REQUEST_EXTENSION`.
 
-## ⚠️ 已知运维陷阱：设置界面会重写 profile 补丁
+### ⚠️ The Settings UI rewrites the profile patch
 
-**现象**：本插件装好后曾经「消失」过一次 —— 插件管理器报 `unknown-plugin`，行不再出现在组合里。
+**Symptom**: the plugin "disappeared" once — the manager reported `unknown-plugin` and the
+row was gone from the composition.
 
-**原因**：在 DSH 的设置界面里改动任何**由设置表单管理的**偏好（聊天记录视图、界面设置等）时，`configEditor` 会把整个
-`C:\Users\Administrator\.dsh\profiles\desktop\cordis.patch.yml` **按它自己的模型重新序列化**。这个重写**只会保留它管理的行**，于是：
+**Cause**: changing any preference **managed by the settings form** (transcript view, UI
+settings, …) makes `configEditor` re-serialise the entire
+`profiles/<name>/cordis.patch.yml` **using its own model**. That rewrite keeps **only the
+rows it manages**, so:
 
-- 手工写进去的 `- insert: … attention-notifier …` 被**整段丢弃**；
-- 顺带还丢掉了 `agent-default-model` 那一行（原本把模型固定为 `deepseek-account` / `deepseek-flash` / `reasoningEffort: max`）；
-- `ui-settings-account` 的 `purpose` / `completion` / `developerTools` 也被重置（例如 `purpose: both` → `null`、`completion: completed` → `skipped`）。
+- a hand-written `- insert: … attention-notifier …` is **dropped entirely**;
+- `agent-default-model` is dropped along with it;
+- `ui-settings-account`'s `purpose` / `completion` / `developerTools` get reset.
 
-**当前对策**：profile 补丁里的插件行改成**最小形式**（只有 `insert` + `id` + `name`，不带 `config`），插件自身的默认值放在 `config.js`，实时偏好放在 `$DSH_HOME/attention-notifier/settings.json`（设置界面不碰这个文件）。这样即使补丁被重写，也只需要恢复两行。
+**Current mitigation**: the profile's plugin row is kept **minimal** (`insert` + `id` +
+`name`, no `config`), the plugin's own defaults live in `config.js`, and live preferences live
+in `$DSH_HOME/attention-notifier/settings.json` (which the settings UI does not touch). Even
+if the patch is rewritten, only two lines need restoring.
 
-## 插件页那个开关是怎么生效的
+### How the Plugins-page switch takes effect
 
-DSH 的插件页开关**只编辑 profile 的 bundle 列表**（`dsh.profile.bundles`），它**不会**增删 profile 补丁里的
-`- insert:` 行，因此**无法卸载一个已经在运行的插件**。补丁行才是「是否加载」的唯一决定因素。
+DSH's Plugins-page switch **only edits the profile's bundle list**
+(`dsh.profile.bundles`). It does **not** add or remove the `- insert:` row, so it **cannot
+unload a plugin that is already running** — the row is the sole determinant of whether the
+plugin loads.
 
-本插件据此把开关做成了**实时生效的闸门**：每次要发提醒前都去读一次 profile 的 bundle 列表，
-不在列表里就整条丢弃（并计入 `observed.suppressed`）。所以：
+This plugin therefore turns the switch into a **live gate**: before every alert it re-reads
+the profile's bundle list and drops the alert if the plugin is not listed (counting it in
+`observed.suppressed`). Consequently:
 
-| 你的操作 | 效果 | 需要重启吗 |
+| Action | Effect | Restart needed? |
 |---|---|---|
-| 插件页**关**开关 | **立即**不再有任何提醒（插件仍在内存里空转） | 不需要 |
-| 插件页**开**开关 | **立即**恢复提醒 | 不需要 |
-| 删掉 `cordis.patch.yml` 的 `- insert:` 行 | 插件被真正卸载，连空转都没有 | 不需要（补丁被 HMR 监视） |
-| 加回那两行 | 重新加载插件 | 不需要 |
+| Switch **off** in the Plugins page | **Immediately** no alerts (the plugin idles in memory) | No |
+| Switch **on** | **Immediately** resumes | No |
+| Delete the `- insert:` row | The plugin is genuinely unloaded | No (the patch is HMR-watched) |
+| Add the row back | Reloads the plugin | No |
 
-> **判定顺序是「先看开关，再看事件」**：开关关闭时，`observed.suppressed` 会增长而 `observed.delivered` 不变。
-> 诊断文件里的 `switch.enabled` 直接显示当前判定，以及这个判定是从哪个 profile 目录读来的 ——
-> 「开关是关的」和「找不到 profile」这两种情况必须能区分开，否则无法排查。
+> **Unreadable means enabled** (fail open). A plugin that quietly stops notifying because it
+> could not find a preference file is far worse than one that notifies when the user expected
+> silence.
 
-> **读不到就当作开启**（fail open）。一个因为找不到偏好文件就悄悄不再提醒的插件，
-> 比一个在该安静时响了一下的插件糟糕得多。
+Both preconditions must hold: the plugin must be in `bundles` **and** the row must exist.
 
-**闸门的两条前提**：插件必须在 `bundles` 列表里、且补丁行存在。只满足一个都不行 ——
-只关开关会让插件空转，只删补丁行会让开关的开启状态无法体现。
+## License
 
-**插件消失后怎么恢复**：在 `cordis.patch.yml` 末尾追加
-
-```yaml
-- insert:
-    - id: attention-notifier
-      name: 'dsh-attention-notifier'
-```
-
-并确认 `dsh.profile.bundles` 里也有 `dsh-attention-notifier`。
-
-> 本地开发安装（`link:` 到源码目录）时，包名可能是你自己起的名字，例如
-> `plugin_manager install_bundle <绝对目录>` 会按被链接包的 `package.json` 名字写进 `bundles`。
-> **补丁行里的 `name` 必须与那个名字完全一致**，两处不一致会导致插件静默不加载。
-
-保存即生效（该文件被 HMR 监视，无需重启）。若插件管理器此时报 `unknown-plugin`，说明行确实不在组合里 —— 补上这两行即可。
-
-**另外注意**：`plugin_manager` 的 `install_bundle` 在依赖已存在时会以 `ambiguous-install` 失败，**不会**重新组合 bundle 自带的补丁层。所以不能靠「重装一次」来恢复行。
+[MIT](LICENSE) © RisingSun785
