@@ -31,7 +31,8 @@
     "attention"
   ],
   "scripts": {
-    "test": "node ./_statemachine.mjs && node ./_client_cases.mjs"
+    "test": "node ./_statemachine.mjs && node ./_client_cases.mjs",
+    "prepublishOnly": "npm test"
   },
   "exports": {
     ".": "./index.js",
