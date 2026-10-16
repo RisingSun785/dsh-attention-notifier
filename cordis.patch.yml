@@ -1,0 +1,36 @@
+# Loader row for dsh-attention-notifier.
+#
+# This file is composed both as the bundle layer during `plugin_manager
+# install_bundle` and as the profile patch layer, so it uses an id-targeted
+# override rather than `insert`: patch layers compose as
+# bundles -> profile patch -> home patch, an `insert` in successive layers would
+# duplicate the row, and the id-targeted form applies at any nesting depth.
+#
+# `attention-notifier` is the row id, the plugin's settings namespace, and the
+# key the settings page reads its effective values under.
+- id: attention-notifier
+  name: 'dsh-attention-notifier'
+  config:
+    triggers:
+      # Blocking moments default to always: the agent cannot continue without you.
+      approval: always
+      question: always
+      # A finished task is only worth an alert when you are not watching.
+      done: unfocused
+      error: always
+    # 0 = report every completion. Any positive value is a gate that silently
+    # cancels a "done: always" choice, which is a confusing combination.
+    minDurationMs: 0
+    channels:
+      toast: true
+      sound: true
+      inApp: true
+    restoreOnClick: true
+    rawFallback: false
+    windows:
+      # Registered by the desktop installer's Start Menu shortcut.
+      appId: com.deepseek.dsh
+      toastTimeoutMs: 10000
+      soundTimeoutMs: 5000
+      focusTimeoutMs: 5000
+    external: []

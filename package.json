@@ -1,0 +1,65 @@
+{
+  "name": "dsh-attention-notifier",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Notifies you when DeepSeek Harness needs attention: approval prompts, questions, task completion, and errors — with a Windows toast whose button brings the window back.",
+  "icon": "./icon.svg",
+  "license": "MIT",
+  "author": "RisingSun785",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RisingSun785/dsh-attention-notifier.git"
+  },
+  "homepage": "https://github.com/RisingSun785/dsh-attention-notifier#readme",
+  "bugs": {
+    "url": "https://github.com/RisingSun785/dsh-attention-notifier/issues"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "os": [
+    "win32"
+  ],
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "notification",
+    "toast",
+    "windows",
+    "attention"
+  ],
+  "scripts": {
+    "test": "node ./_statemachine.mjs && node ./_client_cases.mjs"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "config.js",
+    "win32.js",
+    "client.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "locale/*.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.0.4"
+  }
+}

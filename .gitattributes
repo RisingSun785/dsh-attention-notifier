@@ -1,0 +1,15 @@
+# Normalise line endings in the repository so a clone on any platform gets the same
+# bytes. Without this, Git's autocrlf converts LF to CRLF on checkout here, which
+# makes every file look modified and hides real diffs.
+* text=auto eol=lf
+
+# Binary-ish assets that must not be rewritten.
+*.svg -text
+*.png binary
+*.jpg binary
+*.ico binary
+
+# PowerShell scripts, if any are ever added, need CRLF to run on Windows 5.1.
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
