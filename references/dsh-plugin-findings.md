@@ -1,6 +1,6 @@
 # DSH 插件开发：实测确认的技术约束
 
-本文件记录在开发 `@local/dsh-attention-notifier` 期间**通过读源码 + 实机验证**确认的关键结论。
+本文件记录在开发 `dsh-attention-notifier` 期间**通过读源码 + 实机验证**确认的关键结论。
 每条都标注了证据来源，以及是「已验证」还是「推断」。记录时间：本插件开发会话。
 
 ---
@@ -88,7 +88,7 @@ session.setPermissionRequestHandler((contents, permission, callback) => {
 
 | 事项 | 结论 | 证据 |
 |---|---|---|
-| 客户端 bundle 的 `__ModuleLoader__.load({id})` | **必须等于包名**（如 `@local/dsh-attention-notifier`），不是 loader 行 id | `dsh-client-modules`：`entry: graphRow(packageName, …)` |
+| 客户端 bundle 的 `__ModuleLoader__.load({id})` | **必须等于包名**（如 `dsh-attention-notifier`），不是 loader 行 id | `dsh-client-modules`：`entry: graphRow(packageName, …)` |
 | bundle 的 URL | `/plugins/<包名>/client.js?rev=<rev>`；**`rev` 必须正确**，错误 rev 返回 404 | 实测：`POST /plugins/x/client.js?rev=1` → **405**（证明路由已注册，只有方法检查会返回 405） |
 | `Config` 的消费方式 | Loader 只调用 `Config["~standard"].validate(raw)`，**同步**，返回 `{value}` 或 `{issues:[{message,path?}]}` | `cordis/lib/index.js` `resolveConfig()` |
 | 是否需要 schemastery | **不需要**。可以自己实现标准 schema，避免依赖解析问题 | 见下条 |
@@ -136,7 +136,7 @@ session.setPermissionRequestHandler((contents, permission, callback) => {
 ```yaml
 - insert:
     - id: attention-notifier
-      name: '@local/dsh-attention-notifier'
+      name: 'dsh-attention-notifier'
       config: { … 完整配置 … }
 - id: attention-notifier        # 插件管理器写入的启用状态
   disabled: false
